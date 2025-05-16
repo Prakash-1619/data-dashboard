@@ -3,12 +3,53 @@ import pandas as pd
 import numpy as np
 import plotly.express as px
 
+import re
+import requests
+import io
+
 st.set_page_config(page_title="Advanced Data Dashboard", layout="wide")
 st.title("📊 Advanced Data Exploration Dashboard")
+
+
+# Optional: Add below your file uploader or as a separate option
+st.header("📥 Load File from Google Drive (Public Link Only)")
+gdrive_url = st.text_input("Paste a Google Drive file link (shared with 'Anyone with the link')")
+
+def load_from_gdrive(link):
+    file_id_match = re.search(r'/d/([a-zA-Z0-9_-]+)', link)
+    if not file_id_match:
+        st.warning("⚠️ Invalid Drive link. Use the format: https://drive.google.com/file/d/<FILE_ID>/view")
+        return None
+
+    file_id = file_id_match.group(1)
+    direct_url = f"https://drive.google.com/uc?export=download&id={file_id}"
+
+    try:
+        response = requests.get(direct_url)
+        if response.status_code != 200:
+            st.error("❌ Failed to download file from Google Drive.")
+            return None
+
+        content = response.content
+        if uploaded_file.name.endswith(".csv"):
+            return pd.read_csv(io.BytesIO(content))
+        else:
+            return pd.read_excel(io.BytesIO(content))
+
+    except Exception as e:
+        st.error(f"❌ Error reading file: {e}")
+        return None
+
+if gdrive_url:
+    gdrive_df = load_from_gdrive(gdrive_url)
+    if gdrive_df is not None:
+        st.success("✅ File loaded from Google Drive successfully!")
+        st.dataframe(gdrive_df)
 
 uploaded_file = st.file_uploader("📤 Upload CSV or Excel file", type=["csv", "xlsx"])
 
 def get_dtype_dropdown(col, dtype):
+
     options = ['object', 'int64', 'float64', 'bool', 'datetime64[ns]']
     return st.selectbox(f"Data type for {col}", options, index=options.index(str(dtype)), key=col)
 
