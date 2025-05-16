@@ -1,0 +1,4 @@
+streamlit
+pandas
+plotly
+openpyxl  # needed for Excel files
