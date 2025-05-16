@@ -8,50 +8,62 @@ import io
 st.set_page_config(page_title="Multi-File Data Dashboard", layout="wide")
 st.title("📁 Multi-Source Data Exploration Dashboard")
 
-# === Google Drive File Input ===
-st.header("📥 Load File from Google Drive (Public Link Only)")
-gdrive_url = st.text_input("Paste a public Google Drive file link")
+# --- Function to load from Google Drive shared link ---
+def load_from_gdrive_shared_link(link):
+    # Extract file ID from link formats
+    match = re.search(r'd/([a-zA-Z0-9_-]+)', link)
+    if not match:
+        match = re.search(r'id=([a-zA-Z0-9_-]+)', link)
+    if not match:
+        st.warning("⚠️ Invalid Google Drive link.")
+        return None, None
 
-def load_from_gdrive(link):
-    file_id_match = re.search(r'/d/([a-zA-Z0-9_-]+)', link)
-    if not file_id_match:
-        st.warning("⚠️ Invalid Drive link. Use format: https://drive.google.com/file/d/<FILE_ID>/view")
-        return None
-
-    file_id = file_id_match.group(1)
-    direct_url = f"https://drive.google.com/uc?export=download&id={file_id}"
+    file_id = match.group(1)
+    download_url = f"https://drive.google.com/uc?export=download&id={file_id}"
 
     try:
-        response = requests.get(direct_url)
+        response = requests.get(download_url)
         if response.status_code != 200:
-            st.error("❌ Failed to download file from Google Drive.")
-            return None
+            st.error("❌ Failed to fetch file from Google Drive.")
+            return None, None
 
-        content = io.BytesIO(response.content)
+        file_bytes = io.BytesIO(response.content)
+
+        # Try reading CSV first
         try:
-            return pd.read_csv(content)
-        except:
-            return pd.read_excel(content)
+            df = pd.read_csv(file_bytes)
+            file_type = "csv"
+        except Exception:
+            file_bytes.seek(0)
+            df = pd.read_excel(file_bytes)
+            file_type = "excel"
+
+        return df, file_type
 
     except Exception as e:
-        st.error(f"❌ Error reading file: {e}")
-        return None
+        st.error(f"❌ Error reading file from Google Drive: {e}")
+        return None, None
+
+
+# --- Google Drive Input ---
+st.header("📥 Load File from Google Drive (Public Link Only)")
+gdrive_url = st.text_input("Paste a Google Drive shared file link here:")
+
+uploaded_files = []
 
 if gdrive_url:
-    df = load_from_gdrive(gdrive_url)
+    df, filetype = load_from_gdrive_shared_link(gdrive_url)
     if df is not None:
-        st.success("✅ File loaded from Google Drive successfully!")
+        st.success(f"✅ File loaded from Google Drive successfully ({filetype.upper()})!")
         uploaded_files = [("GoogleDriveFile", df)]
-    else:
-        uploaded_files = []
-else:
-    # === File Uploader ===
+
+# --- File Uploader (multiple) ---
+if not uploaded_files:
     uploaded_files_list = st.file_uploader(
         "📤 Upload CSV or Excel files (Max 10 GB each)",
         type=["csv", "xlsx"],
         accept_multiple_files=True
     )
-    uploaded_files = []
     if uploaded_files_list:
         for uploaded_file in uploaded_files_list:
             try:
@@ -63,70 +75,81 @@ else:
             except Exception as e:
                 st.error(f"❌ Error loading {uploaded_file.name}: {e}")
 
-# === Main Analysis Loop ===
+# --- For each uploaded file do analysis ---
 for idx, (file_name, df) in enumerate(uploaded_files):
     st.markdown(f"## 📄 File: {file_name}")
 
-    # Drop Columns
+    # Drop columns option
     st.subheader("🧹 Drop Columns")
     drop_cols = st.multiselect("Select columns to drop", df.columns, key=f"drop_{idx}")
     if drop_cols:
-        df.drop(columns=drop_cols, inplace=True)
-        st.success(f"Dropped: {', '.join(drop_cols)}")
+        df = df.drop(columns=drop_cols)
+        st.success(f"Dropped columns: {', '.join(drop_cols)}")
 
-    # Data Preview
+    # Preview data
     with st.expander("🔍 Preview Data"):
         st.dataframe(df)
 
-    # Summary Table
+    # Summary table
     st.subheader("📋 Data Summary")
     summary = pd.DataFrame({
         "Column": df.columns,
-        "Data Type": [df[col].dtype for col in df.columns],
-        "Null Count": df.isnull().sum(),
-        "Null %": df.isnull().mean().round(3) * 100,
-        "Unique Values": df.nunique()
-    }).reset_index(drop=True)
+        "Data Type": [str(df[col].dtype) for col in df.columns],
+        "Null Count": df.isnull().sum().values,
+        "Null %": (df.isnull().mean().values * 100).round(2),
+        "Unique Values": df.nunique().values
+    })
     st.dataframe(summary)
 
     st.markdown("---")
 
-    # === Univariate Analysis ===
+    # Univariate Analysis
     st.subheader("📊 Univariate Analysis")
     uni_col = st.selectbox("Select column for univariate analysis", df.columns, key=f"uni_col_{idx}")
     uni_plot = st.radio("Plot type", ["Box Plot", "Histogram", "Line Plot", "Distribution"], horizontal=True, key=f"uni_plot_{idx}")
 
-    if pd.api.types.is_numeric_dtype(df[uni_col]):
+    if pd.api.types.is_numeric_dtype(df[uni_col]) or pd.api.types.is_datetime64_any_dtype(df[uni_col]):
         if uni_plot == "Box Plot":
             fig = px.box(df, y=uni_col)
-        elif uni_plot == "Histogram":
+        elif uni_plot == "Histogram" or uni_plot == "Distribution":
             fig = px.histogram(df, x=uni_col)
         elif uni_plot == "Line Plot":
             fig = px.line(df, y=uni_col)
-        else:
-            fig = px.histogram(df, x=uni_col)
         st.plotly_chart(fig, use_container_width=True)
     else:
-        st.warning("⚠️ Please select a numeric column for this plot.")
+        st.warning("⚠️ Select a numeric or datetime column for this plot.")
 
     st.markdown("---")
 
-    # === Bivariate Analysis ===
+    # Bivariate Analysis
     st.subheader("🔄 Bivariate Analysis")
     numeric_date_cols = df.select_dtypes(include=["number", "datetime64"]).columns.tolist()
     categorical_cols = df.select_dtypes(include=["object", "category"]).columns.tolist()
 
-    x_col = st.selectbox("X-axis column", df.columns, key=f"xcol_{idx}")
-    y_col = st.selectbox("Y-axis column (numeric/date)", numeric_date_cols, key=f"ycol_{idx}")
-    legend_col = st.selectbox("Legend (categorical)", categorical_cols, key=f"legend_{idx}", index=0 if categorical_cols else None)
+    x_col = st.selectbox("X-axis column (any type)", df.columns, key=f"xcol_{idx}")
+    if numeric_date_cols:
+        y_col = st.selectbox("Y-axis column (numeric/date only)", numeric_date_cols, key=f"ycol_{idx}")
+    else:
+        y_col = None
+
+    legend_col = None
+    if categorical_cols:
+        legend_col = st.selectbox("Legend (categorical columns)", [None] + categorical_cols, key=f"legend_{idx}")
 
     plot_type = st.radio("Chart type", ["Table", "Box Plot", "Line Plot"], horizontal=True, key=f"bivar_plot_{idx}")
 
     if plot_type == "Table":
-        st.dataframe(df[[x_col, y_col]].dropna())
+        cols = [c for c in [x_col, y_col] if c is not None]
+        st.dataframe(df[cols].dropna())
     elif plot_type == "Box Plot":
-        fig = px.box(df, x=x_col, y=y_col, color=legend_col)
-        st.plotly_chart(fig, use_container_width=True)
+        if y_col is not None:
+            fig = px.box(df, x=x_col, y=y_col, color=legend_col)
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.warning("⚠️ Y-axis column is required for Box Plot.")
     elif plot_type == "Line Plot":
-        fig = px.line(df, x=x_col, y=y_col, color=legend_col)
-        st.plotly_chart(fig, use_container_width=True)
+        if y_col is not None:
+            fig = px.line(df, x=x_col, y=y_col, color=legend_col)
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.warning("⚠️ Y-axis column is required for Line Plot.")
